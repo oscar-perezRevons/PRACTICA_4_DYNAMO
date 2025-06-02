@@ -1,17 +1,18 @@
 #include "LightSensor.h"
-#include <Arduino.h> // Necesario para String y analogRead
 
-LightSensor::LightSensor(int pin, const int *thresholds)
-    : pin(pin), thresholds(thresholds) {}
+LightSensor::LightSensor(int pin, int thresholdLow, int thresholdHigh)
+    : pin(pin), thresholdLow(thresholdLow), thresholdHigh(thresholdHigh) {}
 
-int LightSensor::read() { return analogRead(pin); }
+void LightSensor::begin() {
+    // No special init for analog input on ESP32
+}
 
-String LightSensor::getLevel(int value)
-{
-  if (value < thresholds[0])
-    return "bajo";
-  else if (value < thresholds[1])
-    return "medio";
-  else
-    return "alto";
+int LightSensor::readIntensity() {
+    return analogRead(pin);
+}
+
+String LightSensor::getLevel(int intensity) {
+    if (intensity < thresholdLow) return "bajo";
+    else if (intensity < thresholdHigh) return "medio";
+    else return "alto";
 }

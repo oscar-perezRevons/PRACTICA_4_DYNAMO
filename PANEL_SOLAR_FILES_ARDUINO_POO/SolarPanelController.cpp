@@ -1,165 +1,118 @@
 #include "SolarPanelController.h"
-#include <ArduinoJson.h>
-#include <Arduino.h>
-
-// certificados.h ya está incluido desde el header
 
 SolarPanelController::SolarPanelController(
-    const char *wifi_ssid,
-    const char *wifi_pass,
-    int ldrPin,
-    const int *thresholds,
-    int servoPin,
-    const char *mqtt_broker,
-    int mqtt_port,
-    const char *client_id,
-    const char *shadow_update_topic,
-    const char *shadow_get_topic,
-    unsigned long updateInterval)
-    : wifi(wifi_ssid, wifi_pass),
-      client(net),
-      servo(servoPin),
-      sensor(ldrPin, thresholds),
-      MQTT_BROKER(mqtt_broker),
-      MQTT_PORT(mqtt_port),
-      CLIENT_ID(client_id),
-      SHADOW_UPDATE_TOPIC(shadow_update_topic),
-      SHADOW_GET_TOPIC(shadow_get_topic),
-      lastUpdateTime(0),
-      updateInterval(updateInterval),
-      mediumSweepDegrees(0)
-{
+    WiFiManager& wifi,
+    ServoController& servo,
+    LightSensor& ldr,
+    NubladoManager& nublado,
+    SolarPanelShadow& shadow,
+    unsigned long updateInterval,
+    unsigned long recalibrarInterval
+)
+    : wifi(wifi), servo(servo), ldr(ldr), nublado(nublado), shadow(shadow),
+      updateInterval(updateInterval), recalibrarInterval(recalibrarInterval),
+      lastUpdateTime(0), recalibrar(false), lastLightLevel(""), lastIntensity(-1),
+      lastNublado(false), busquedasMedio(0)
+{}
+
+void SolarPanelController::begin() {
+    wifi.connect();
+    servo.begin(0);
+    ldr.begin();
+    int initialIntensity = ldr.readIntensity();
+    String initialLevel = ldr.getLevel(initialIntensity);
+    publishState(initialLevel, initialIntensity, nublado.isNublado(), false, servo.getPosition());
+    lastLightLevel = initialLevel;
+    lastIntensity = initialIntensity;
+    lastNublado = nublado.isNublado();
+    Serial.print("Nivel inicial de luz: ");
+    Serial.println(initialLevel);
 }
 
-void SolarPanelController::begin()
-{
-  Serial.begin(115200);
-  wifi.connect();
-
-  net.setCACert(AMAZON_ROOT_CA1);
-  net.setCertificate(CERTIFICATE);
-  net.setPrivateKey(PRIVATE_KEY);
-
-  client.setServer(MQTT_BROKER, MQTT_PORT);
-  client.setCallback([this](char *topic, byte *payload, unsigned int length)
-                     { this->mqttCallback(topic, payload, length); });
-
-  connectAWS();
-
-  servo.begin();
-  int initialIntensity = sensor.read();
-  String initialLevel = sensor.getLevel(initialIntensity);
-  Serial.print("Nivel inicial de luz: ");
-  Serial.println(initialLevel);
-  shadow.update(client, SHADOW_UPDATE_TOPIC, initialIntensity, initialLevel, servo.getPosition(), nubladoMgr.isNublado());
+void SolarPanelController::publishState(const String& lightLevel, int intensity, bool nublado, bool recalibrarShadow, int servoPosition) {
+    String jsonPayload;
+    shadow.buildStateJson(jsonPayload, lightLevel, intensity, nublado, recalibrarShadow, servoPosition);
+    // Aquí publicarías el estado a AWS IoT (por MQTT, etc.) usando tu propia lógica de MQTT.
+    // Por ejemplo: mqttClient.publish(topic, jsonPayload.c_str());
+    Serial.print("Publicando estado: ");
+    Serial.println(jsonPayload);
 }
 
-void SolarPanelController::loop()
-{
-  if (!client.connected())
-    connectAWS();
-  client.loop();
-
-  handleNubladoMode();
-
-  if (nubladoMgr.isNublado())
-  {
-    shadow.update(client, SHADOW_UPDATE_TOPIC, sensor.read(), sensor.getLevel(sensor.read()), servo.getPosition(), true);
-    delay(100);
-    return;
-  }
-
-  if (millis() - lastUpdateTime >= updateInterval)
-  {
-    int currentIntensity = sensor.read();
-    String currentLevel = sensor.getLevel(currentIntensity);
-    controlServo(currentLevel);
-    shadow.update(client, SHADOW_UPDATE_TOPIC, currentIntensity, currentLevel, servo.getPosition(), nubladoMgr.isNublado());
-    lastUpdateTime = millis();
-  }
-}
-
-void SolarPanelController::connectAWS()
-{
-  Serial.print("Conectando a AWS IoT...");
-  while (!client.connected())
-  {
-    if (client.connect(CLIENT_ID))
-    {
-      Serial.println("Conectado.");
-      client.subscribe(SHADOW_GET_TOPIC);
+void SolarPanelController::handleShadowMessage(char* topic, byte* payload, unsigned int length) {
+    payload[length] = '\0';
+    StaticJsonDocument<1024> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) return;
+    if (SolarPanelShadow::findRecalibracionTrue(doc)) {
+        recalibrar = true;
+        Serial.println("Recalibracion detectada en update del shadow.");
     }
-    else
-    {
-      Serial.print(".");
-      delay(1000);
-    }
-  }
 }
 
-void SolarPanelController::mqttCallback(char *topic, byte *payload, unsigned int length)
-{
-  Serial.print("Mensaje recibido [");
-  Serial.print(topic);
-  Serial.println("]");
-  if (String(topic) == SHADOW_GET_TOPIC)
-  {
-    int currentIntensity = sensor.read();
-    String currentLevel = sensor.getLevel(currentIntensity);
-    shadow.update(client, SHADOW_UPDATE_TOPIC, currentIntensity, currentLevel, servo.getPosition(), nubladoMgr.isNublado());
-  }
-}
+void SolarPanelController::loop() {
+    unsigned long now = millis();
+    if (now - lastUpdateTime < updateInterval) return;
+    lastUpdateTime = now;
 
-void SolarPanelController::controlServo(String lightLevel)
-{
-  unsigned long currentTime = millis();
-  if (nubladoMgr.isNublado())
-    return;
+    int currentIntensity = ldr.readIntensity();
+    String currentLevel = ldr.getLevel(currentIntensity);
 
-  if (lightLevel == "bajo")
-  {
-    if (servo.getPosition() != 0)
-    {
-      servo.moveToLow();
+    if (recalibrar) {
+        servo.setPosition(0);
+        recalibrar = false;
+        Serial.println("Recalibración ejecutada: servo a posición 0");
+        publishState(currentLevel, currentIntensity, nublado.isNublado(), false, servo.getPosition());
+        delay(500);
     }
-    mediumSweepDegrees = 0;
-  }
-  else if (lightLevel == "medio" && (currentTime - servo.getLastMoveTime() >= servo.getDelayMs()))
-  {
-    servo.moveToNextMedium();
-    mediumSweepDegrees += servo.getIncrement();
-    if (mediumSweepDegrees >= 180)
-    {
-      nubladoMgr.setNublado(true);
-      nubladoMgr.setLastCheck(millis());
-      Serial.println("Modo nublado activado: no se encontró 'alto' en una vuelta.");
-      mediumSweepDegrees = 0;
-    }
-    servo.setLastMoveTime(currentTime);
-  }
-  else if (lightLevel == "alto")
-  {
-    servo.stayHigh();
-    mediumSweepDegrees = 0;
-  }
-}
 
-void SolarPanelController::handleNubladoMode()
-{
-  if (!nubladoMgr.isNublado())
-    return;
-  unsigned long currentTime = millis();
-  if (currentTime - nubladoMgr.getLastCheck() >= nubladoMgr.getInterval())
-  {
-    Serial.println("Recalibración en modo nublado...");
-    int intensity = sensor.read();
-    String level = sensor.getLevel(intensity);
-    if (level == "alto")
-    {
-      nubladoMgr.setNublado(false);
-      mediumSweepDegrees = 0;
-      Serial.println("¡Se encontró 'alto'! Saliendo de modo nublado.");
+    if (nublado.isNublado()) {
+        if (currentLevel == "alto" || currentLevel == "bajo") {
+            nublado.setNublado(false);
+            publishState(currentLevel, currentIntensity, false, false, servo.getPosition());
+            Serial.println("Cambio de estado detectado, saliendo de nublado.");
+            lastLightLevel = currentLevel;
+            lastIntensity = currentIntensity;
+            lastNublado = false;
+            busquedasMedio = 0;
+            return;
+        }
+        nublado.update(now, recalibrarInterval, servo);
+        return;
     }
-    nubladoMgr.setLastCheck(currentTime);
-  }
+
+    if (currentLevel != lastLightLevel) {
+        if (currentLevel == "bajo") {
+            servo.setPosition(0);
+            Serial.println("Nivel bajo: panel a posición inicial.");
+            busquedasMedio = 0;
+            publishState(currentLevel, currentIntensity, false, false, servo.getPosition());
+        }
+        else if (currentLevel == "medio") {
+            Serial.println("Nivel medio: iniciando búsqueda de luz alta.");
+            busquedasMedio = 0;
+            publishState(currentLevel, currentIntensity, false, false, servo.getPosition());
+        }
+        else if (currentLevel == "alto") {
+            Serial.println("Nivel alto: manteniendo posición.");
+            busquedasMedio = 0;
+            publishState(currentLevel, currentIntensity, false, false, servo.getPosition());
+        }
+        lastLightLevel = currentLevel;
+        lastIntensity = currentIntensity;
+        lastNublado = nublado.isNublado();
+    }
+
+    if (currentLevel == "medio") {
+        if (busquedasMedio < 9) {
+            servo.increment(20);
+            Serial.print("Buscando alto, ángulo: "); Serial.println(servo.getPosition());
+            busquedasMedio++;
+        } else if (!nublado.isNublado()) {
+            nublado.setNublado(true);
+            nublado.reset(now);
+            publishState(currentLevel, currentIntensity, true, false, servo.getPosition());
+            Serial.println("Día nublado detectado. Avanza servo cada 30s hasta cambio de estado.");
+            lastNublado = true;
+        }
+    }
 }

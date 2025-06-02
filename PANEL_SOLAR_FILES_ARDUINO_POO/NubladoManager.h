@@ -1,16 +1,14 @@
 #pragma once
+#include "ServoController.h"
 
-class NubladoManager
-{
-  bool nublado;
-  unsigned long lastCheck;
-  unsigned long interval;
-
+class NubladoManager {
 public:
-  NubladoManager(unsigned long interval = 30000);
-  bool isNublado() const;
-  void setNublado(bool value);
-  unsigned long getLastCheck() const;
-  void setLastCheck(unsigned long t);
-  unsigned long getInterval() const;
+    NubladoManager();
+    void setNublado(bool isNublado);
+    bool isNublado() const;
+    void update(unsigned long now, unsigned long intervalo, ServoController& servo);
+    void reset(unsigned long now);
+private:
+    bool nublado;
+    unsigned long lastMoveTime;
 };

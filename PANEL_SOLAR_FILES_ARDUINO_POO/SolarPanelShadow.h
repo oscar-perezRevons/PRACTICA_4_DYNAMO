@@ -1,15 +1,16 @@
 #pragma once
+#include <ArduinoJson.h>
 
-#include <PubSubClient.h>
-
-class SolarPanelShadow
-{
-  String previousLightLevel;
-  bool lastNublado;
-
+class SolarPanelShadow {
 public:
-  SolarPanelShadow();
-  void update(PubSubClient &client, const char *topic,
-              int currentIntensity, String currentLevel,
-              int currentServoPos, bool nublado);
+    SolarPanelShadow();
+    void buildStateJson(
+        String& outputJson,
+        const String& lightLevel,
+        int intensity,
+        bool nublado,
+        bool recalibrar,
+        int servoPosition
+    );
+    static bool findRecalibracionTrue(JsonVariant v);
 };
