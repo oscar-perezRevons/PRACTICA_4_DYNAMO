@@ -1,30 +1,29 @@
+import json
 import boto3
-import logging
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('smart_light_sensor') 
 
 def lambda_handler(event, context):
     try:
-        # El objeto 'context' de la Lambda contiene información del entorno de ejecución
-        aws_account_id = context.invoked_function_arn.split(":")[4]
-        logger.info(f"El ID de la cuenta de AWS de esta Lambda es: {aws_account_id}")
+        data_item = {
+            'thing_name': event.get('thing_name'),
+            'timestamp': event.get('timestamp'),
+            'light_level': event.get('light_level'),
+            'light_intensity': event.get('light_intensity'),
+            'servo_angle': event.get('servo_angle'),
+            'last_update': event.get('last_update')
+        }
 
-        # También puedes obtener el ARN del rol de ejecución de la Lambda
-        execution_role_arn = context.invoked_function_arn.split(":")[5] # Este es el rol o usuario que invoca la función
-        logger.info(f"El ARN del rol de ejecución de esta Lambda es: {execution_role_arn}")
-
-        # Si quieres el ARN de la función Lambda misma:
-        lambda_arn = context.invoked_function_arn
-        logger.info(f"El ARN de la función Lambda es: {lambda_arn}")
-
+        response = table.put_item(Item=data_item)
         return {
             'statusCode': 200,
-            'body': json.dumps(f"ID de cuenta de AWS: {aws_account_id}")
+            'body': 'Data stored successfully'
         }
+
     except Exception as e:
-        logger.error(f"Error al obtener el ID de la cuenta de AWS: {e}")
+        print(f"Exception: {e}")
         return {
             'statusCode': 500,
-            'body': json.dumps("Error interno")
+            'body': f"Error: {e}"
         }
